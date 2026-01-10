@@ -9,7 +9,6 @@ from modules.calibration import calibrate_system
 from modules.camera_magic import (
     gain_offset_calibration,
     screen_to_camera_space,
-    shadow_object_detection,
 )
 from modules.settings import HEIGHT, WIDTH
 from modules.videostream import VideoStream, get_camera_capture
@@ -28,6 +27,9 @@ SOURCE_X = 8
 SOURCE_FREQ = 5.0
 SOURCE_STRENGTH = 1.2
 WAVE_BRUSH_RADIUS = 6
+SHADOW_RATIO = 0.6
+SHADOW_MIN_DELTA = 15.0
+SHADOW_MIN_AREA = 200
 
 
 def make_kernel(radius):
@@ -97,6 +99,48 @@ def objects_to_mask(objects, height, width):
             continue
         cv2.fillPoly(mask, [pts.reshape(-1, 1, 2)], 255)
     return mask
+
+
+def shadow_object_detection_calibrated(
+    cam_gray_masked,
+    expected,
+    b_map,
+    mask_diff,
+    H_inv,
+    ratio=SHADOW_RATIO,
+    min_delta=SHADOW_MIN_DELTA,
+    min_area=SHADOW_MIN_AREA,
+):
+    cam_f = cam_gray_masked.astype(np.float32)
+    expected_f = expected.astype(np.float32)
+    shadow_thresh = b_map + (expected_f - b_map) * ratio
+    shadow_mask = (cam_f < shadow_thresh) & ((expected_f - cam_f) > min_delta)
+    if mask_diff is not None:
+        shadow_mask[mask_diff] = False
+
+    shadow_mask_u8 = (shadow_mask.astype(np.uint8) * 255)
+    contours, _ = cv2.findContours(
+        shadow_mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    objects = []
+    contours_vis = cv2.cvtColor(shadow_mask_u8, cv2.COLOR_GRAY2BGR)
+
+    for cnt in contours:
+        if cv2.contourArea(cnt) < min_area:
+            continue
+        cv2.drawContours(contours_vis, [cnt], -1, (0, 255, 0), 2)
+        pts_cam = cnt.astype(np.float32)
+        pts_screen = cv2.perspectiveTransform(pts_cam, H_inv)
+        pygame_polygon = []
+        for p in pts_screen:
+            x_cv, y_cv = p[0]
+            pygame_polygon.append((int(x_cv), int(y_cv)))
+        objects.append({
+            "contour_cam": cnt,
+            "polygon_pygame": pygame_polygon
+        })
+
+    return objects, contours_vis
 
 
 def main():
@@ -171,8 +215,8 @@ def main():
         expected = gain_offset_calibration(warped_proj_gray_masked, a_map, b_map)
 
         mask_diff = np.zeros_like(cam_gray_masked, dtype=bool)
-        objects, contours_vis = shadow_object_detection(
-            cam_gray_masked, expected, mask_diff, H_inv
+        objects, contours_vis = shadow_object_detection_calibrated(
+            cam_gray_masked, expected, b_map, mask_diff, H_inv
         )
 
         shadow_screen = objects_to_mask(objects, HEIGHT, WIDTH)
