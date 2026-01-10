@@ -1,11 +1,6 @@
 import pygame
 import cv2
 import numpy as np
-from collections import deque
-
-from modules.settings import lagbuffer
-
-ball_history = deque(maxlen=lagbuffer)
 
 def screen_to_camera_space(screen, H, mask, h_cam, w_cam):
     proj_surface = pygame.surfarray.array3d(screen)     # (W,H,3)
@@ -88,3 +83,32 @@ def shadow_object_detection(cam_gray_masked, expected, mask_diff, H_inv):
         })
 
     return objects, contours_vis
+
+
+def water_to_camera_space(water_particles, H, cam_gray_masked, radius_px=3):
+    """
+    Project water particles (screen space) into camera space
+    and return a binary mask covering their footprint.
+    """
+
+    water_mask = np.zeros_like(cam_gray_masked, np.uint8)
+
+    if len(water_particles) == 0:
+        return water_mask
+
+    # Collect particle centers
+    pts = np.float32([
+        [p.pos.x, p.pos.y] for p in water_particles
+    ]).reshape(-1, 1, 2)
+
+    # Project into camera space
+    pts_cam = cv2.perspectiveTransform(pts, H).astype(np.int32)
+
+    h, w = cam_gray_masked.shape[:2]
+
+    # Draw each particle as a small filled circle
+    for (x, y) in pts_cam.reshape(-1, 2):
+        if 0 <= x < w and 0 <= y < h:
+            cv2.circle(water_mask, (x, y), radius_px, 255, -1)
+
+    return water_mask
