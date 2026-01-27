@@ -42,7 +42,8 @@ def calibrate_system(cap, screen, cols=8, rows=6, WIDTH=800, HEIGHT=600):
 
 
 def project_checkerboard(cols, rows, screen):
-    checker = make_checkerboard_fullscreen(cols, rows)
+    width, height = screen.get_size()
+    checker = make_checkerboard_fullscreen(cols, rows, width=width, height=height)
     checker_surf = pygame.surfarray.make_surface(checker.swapaxes(0, 1))
 
     pygame.display.flip()

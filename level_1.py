@@ -1,4 +1,6 @@
+import argparse
 import math
+import os
 import time
 
 import cv2
@@ -17,6 +19,14 @@ from modules.videostream import VideoStream, get_camera_capture
 GRID_H = 180
 GRID_W = 240
 FPS = 60
+
+TARGET_DISPLAY_INDEX = 1
+USE_BORDERLESS_FULLSCREEN = True
+
+CALIBRATION_CACHE = "calibration_cache.npz"
+
+COUNTDOWN_SECONDS = 5
+FAIL_HOLD_SECONDS = 1.5
 
 DT = 1.0
 WAVE_SPEED = 0.45
@@ -41,6 +51,215 @@ WAVE_VELOCITY_GAIN = 1.6
 WAVE_SPEED_CLAMP = 1.5
 WAVE_MIN_GRAD = 1e-4
 WAVE_MIN_DU = 1e-4
+
+
+def _get_windows_monitors():
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+
+    class RECT(ctypes.Structure):
+        _fields_ = [
+            ("left", wintypes.LONG),
+            ("top", wintypes.LONG),
+            ("right", wintypes.LONG),
+            ("bottom", wintypes.LONG),
+        ]
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("rcMonitor", RECT),
+            ("rcWork", RECT),
+            ("dwFlags", wintypes.DWORD),
+        ]
+
+    MONITORINFOF_PRIMARY = 1
+    monitors = []
+
+    def _callback(hmonitor, hdc, lprect, lparam):
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(MONITORINFO)
+        if user32.GetMonitorInfoW(hmonitor, ctypes.byref(info)) == 0:
+            return 1
+        rect = info.rcMonitor
+        monitors.append({
+            "left": rect.left,
+            "top": rect.top,
+            "right": rect.right,
+            "bottom": rect.bottom,
+            "width": rect.right - rect.left,
+            "height": rect.bottom - rect.top,
+            "primary": bool(info.dwFlags & MONITORINFOF_PRIMARY),
+        })
+        return 1
+
+    enum_proc = ctypes.WINFUNCTYPE(
+        wintypes.BOOL,
+        wintypes.HMONITOR,
+        wintypes.HDC,
+        ctypes.POINTER(RECT),
+        wintypes.LPARAM,
+    )(_callback)
+    user32.EnumDisplayMonitors(0, 0, enum_proc, 0)
+    return monitors
+
+
+def _get_pygame_monitors():
+    monitors = []
+    if hasattr(pygame.display, "get_desktop_sizes"):
+        x_offset = 0
+        for idx, (w, h) in enumerate(pygame.display.get_desktop_sizes()):
+            monitors.append({
+                "left": x_offset,
+                "top": 0,
+                "right": x_offset + w,
+                "bottom": h,
+                "width": w,
+                "height": h,
+                "primary": idx == 0,
+            })
+            x_offset += w
+        return monitors
+
+    info = pygame.display.Info()
+    monitors.append({
+        "left": 0,
+        "top": 0,
+        "right": info.current_w,
+        "bottom": info.current_h,
+        "width": info.current_w,
+        "height": info.current_h,
+        "primary": True,
+    })
+    return monitors
+
+
+def get_target_monitor(target_index):
+    monitors = []
+    if os.name == "nt":
+        try:
+            monitors = _get_windows_monitors()
+        except Exception:
+            monitors = []
+
+    if not monitors:
+        monitors = _get_pygame_monitors()
+
+    if not monitors:
+        monitors = [{
+            "left": 0,
+            "top": 0,
+            "right": WIDTH,
+            "bottom": HEIGHT,
+            "width": WIDTH,
+            "height": HEIGHT,
+            "primary": True,
+        }]
+
+    if target_index < 0 or target_index >= len(monitors):
+        target_index = 0
+
+    return target_index, monitors[target_index], len(monitors)
+
+
+def create_fullscreen_display(target_index):
+    display_index, monitor, monitor_count = get_target_monitor(target_index)
+    os.environ["SDL_VIDEO_WINDOW_POS"] = f"{monitor['left']},{monitor['top']}"
+    os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(display_index)
+
+    size = (monitor["width"], monitor["height"])
+    flags = pygame.NOFRAME if USE_BORDERLESS_FULLSCREEN else pygame.FULLSCREEN
+    screen = None
+
+    try:
+        screen = pygame.display.set_mode(size, flags, display=display_index)
+    except TypeError:
+        try:
+            screen = pygame.display.set_mode(size, flags)
+        except pygame.error:
+            screen = None
+    except pygame.error:
+        display_index, monitor, monitor_count = get_target_monitor(0)
+        os.environ["SDL_VIDEO_WINDOW_POS"] = f"{monitor['left']},{monitor['top']}"
+        os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = "0"
+        size = (monitor["width"], monitor["height"])
+        try:
+            screen = pygame.display.set_mode(size, flags)
+        except pygame.error:
+            screen = None
+
+    if screen is None:
+        screen = pygame.display.set_mode(size, pygame.NOFRAME)
+
+    width, height = screen.get_size()
+    return screen, width, height, display_index, monitor, monitor_count
+
+
+def save_calibration(path, H, mask, a_map, b_map):
+    np.savez_compressed(path, H=H, mask=mask, a_map=a_map, b_map=b_map)
+
+
+def load_calibration(path):
+    if not os.path.exists(path):
+        return None
+    with np.load(path) as data:
+        return data["H"], data["mask"], data["a_map"], data["b_map"]
+
+
+def show_message(screen, clock, text, duration, font, color):
+    width, height = screen.get_size()
+    text_surf = font.render(text, True, color)
+    text_rect = text_surf.get_rect(center=(width // 2, height // 2))
+    end_time = time.time() + duration
+
+    while time.time() < end_time:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                return False
+
+        screen.fill((0, 0, 0))
+        screen.blit(text_surf, text_rect)
+        pygame.display.flip()
+        clock.tick(FPS)
+
+    return True
+
+
+def run_countdown(screen, clock, seconds, label, label_font, count_font, draw_frame=None):
+    width, height = screen.get_size()
+    label_surf = label_font.render(label, True, (255, 255, 255))
+    label_rect = label_surf.get_rect(center=(width // 2, int(height * 0.42)))
+    end_time = time.time() + seconds
+
+    while True:
+        dt_sec = clock.tick(FPS) / 1000.0
+        remaining = int(math.ceil(end_time - time.time()))
+        if remaining <= 0:
+            break
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                return False
+
+        count_surf = count_font.render(str(remaining), True, (255, 255, 255))
+        count_rect = count_surf.get_rect(center=(width // 2, int(height * 0.62)))
+
+        if draw_frame is None:
+            screen.fill((0, 0, 0))
+        else:
+            if not draw_frame(dt_sec):
+                return False
+        screen.blit(label_surf, label_rect)
+        screen.blit(count_surf, count_rect)
+        pygame.display.flip()
+
+    return True
 
 
 def make_kernel(radius):
@@ -293,18 +512,49 @@ def resolve_circle_rect(pos, radius, rect):
     return None
 
 
-def main():
+def main(cached_calibration=False, return_on_success=False):
     pygame.init()
-    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    screen, width, height, display_index, monitor, monitor_count = create_fullscreen_display(
+        TARGET_DISPLAY_INDEX
+    )
+    global WIDTH, HEIGHT
+    WIDTH, HEIGHT = width, height
     pygame.display.set_caption("Level 1 - Dock")
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("Arial", 52, bold=True)
+    ready_font = pygame.font.SysFont("Arial", 64, bold=True)
+    countdown_font = pygame.font.SysFont("Arial", 120, bold=True)
+    fail_font = pygame.font.SysFont("Arial", 72, bold=True)
     success_surf = font.render("SUCCESS", True, (255, 255, 255))
 
-    cap = get_camera_capture()
-    H, mask, _, a_map, b_map = calibrate_system(cap=cap, screen=screen, WIDTH=WIDTH, HEIGHT=HEIGHT)
-    H_inv = np.linalg.inv(H)
-    cap.release()
+    if display_index != TARGET_DISPLAY_INDEX:
+        print(
+            f"Display {TARGET_DISPLAY_INDEX} not found; using display {display_index}."
+        )
+    print(
+        "Display:",
+        f"{monitor_count} total,",
+        f"using index {display_index} at {monitor['width']}x{monitor['height']}",
+        f"pos {monitor['left']},{monitor['top']}",
+    )
+
+    calibration = None
+    if cached_calibration:
+        calibration = load_calibration(CALIBRATION_CACHE)
+        if calibration is None:
+            print(f"No calibration cache found at {CALIBRATION_CACHE}.")
+            pygame.quit()
+            return False
+        H, mask, a_map, b_map = calibration
+        H_inv = np.linalg.inv(H)
+    else:
+        cap = get_camera_capture()
+        H, mask, _, a_map, b_map = calibrate_system(
+            cap=cap, screen=screen, WIDTH=WIDTH, HEIGHT=HEIGHT
+        )
+        H_inv = np.linalg.inv(H)
+        save_calibration(CALIBRATION_CACHE, H, mask, a_map, b_map)
+        cap.release()
 
     cap_stream = VideoStream(0)
 
@@ -340,13 +590,73 @@ def main():
     drive_on = True
     show_overlay = False
     success = False
+    completed_success = False
     t = 0.0
     frame_count = 0
     t_prev = time.time()
 
+    def draw_wave_background(dt_sec):
+        nonlocal t, u, u_prev, u_next
+        t += dt_sec
+
+        ret, cam_frame = cap_stream.read()
+        if not ret:
+            return True
+
+        cam_gray = cv2.cvtColor(cam_frame, cv2.COLOR_BGR2GRAY)
+        cam_gray_masked = cv2.bitwise_and(cam_gray, cam_gray, mask=mask)
+
+        h_cam, w_cam = cam_gray.shape[:2]
+        warped_proj_gray_masked = screen_to_camera_space(screen, H, mask, h_cam, w_cam)
+        expected = gain_offset_calibration(warped_proj_gray_masked, a_map, b_map)
+
+        mask_diff = np.zeros_like(cam_gray_masked, dtype=bool)
+        objects, _ = shadow_object_detection_calibrated(
+            cam_gray_masked, expected, b_map, mask_diff, H_inv
+        )
+
+        shadow_screen = objects_to_mask(objects, HEIGHT, WIDTH)
+        shadow_small = cv2.resize(
+            shadow_screen, (GRID_W, GRID_H), interpolation=cv2.INTER_NEAREST
+        )
+        shadow_mask = shadow_small > 0
+        u[shadow_mask] = 0.0
+        u_prev[shadow_mask] = 0.0
+
+        mx, my = pygame.mouse.get_pos()
+        gx = max(0, min(GRID_W - 1, int(mx / cell_w)))
+        gy = max(0, min(GRID_H - 1, int(my / cell_h)))
+        buttons = pygame.mouse.get_pressed(3)
+        if buttons[0]:
+            add_kernel(u, gy, gx, wave_kernel, 2.0)
+
+        if not paused:
+            step(u, u_prev, u_next, shadow_mask, C2, DAMPING)
+            u_prev, u, u_next = u, u_next, u_prev
+
+            if drive_on:
+                drive = get_drive(t)
+                amp = math.sin(t * SOURCE_FREQ) * drive * SOURCE_STRENGTH
+                mask_src = source_mask & ~shadow_mask
+                u[mask_src] = amp
+
+        overlay_mask = shadow_mask if show_overlay else None
+        render(u, img, color_scale=220.0, overlay=overlay_mask)
+        pygame.surfarray.blit_array(frame, img.swapaxes(0, 1))
+        pygame.transform.scale(frame, screen.get_size(), screen)
+        return True
+
     print("Controls: left click=wave, right click=move boat,")
     print("C=clear, M=toggle music drive, P=pause,")
     print("R=reset boat, V=toggle shadow overlay, ESC=quit")
+
+    if not run_countdown(
+        screen, clock, COUNTDOWN_SECONDS, "GET READY", ready_font, countdown_font, draw_wave_background
+    ):
+        cap_stream.release()
+        pygame.quit()
+        cv2.destroyAllWindows()
+        return False
 
     while running:
         dt_sec = clock.tick(FPS) / 1000.0
@@ -397,70 +707,105 @@ def main():
         u[solid_wave] = 0.0
         u_prev[solid_wave] = 0.0
 
-        mx, my = pygame.mouse.get_pos()
-        gx = max(0, min(GRID_W - 1, int(mx / cell_w)))
-        gy = max(0, min(GRID_H - 1, int(my / cell_h)))
-        buttons = pygame.mouse.get_pressed(3)
-        if buttons[0]:
-            add_kernel(u, gy, gx, wave_kernel, 2.0)
-        if buttons[2]:
-            boat_pos[:] = (mx, my)
-            boat_vel[:] = 0.0
+        if not success:
+            mx, my = pygame.mouse.get_pos()
+            gx = max(0, min(GRID_W - 1, int(mx / cell_w)))
+            gy = max(0, min(GRID_H - 1, int(my / cell_h)))
+            buttons = pygame.mouse.get_pressed(3)
+            if buttons[0]:
+                add_kernel(u, gy, gx, wave_kernel, 2.0)
+            if buttons[2]:
+                boat_pos[:] = (mx, my)
+                boat_vel[:] = 0.0
 
-        if not paused:
-            step(u, u_prev, u_next, solid_wave, C2, DAMPING)
-            u_prev, u, u_next = u, u_next, u_prev
+            if not paused:
+                step(u, u_prev, u_next, solid_wave, C2, DAMPING)
+                u_prev, u, u_next = u, u_next, u_prev
 
-            if drive_on:
-                drive = get_drive(t)
-                amp = math.sin(t * SOURCE_FREQ) * drive * SOURCE_STRENGTH
-                mask_src = source_mask & ~solid_wave
-                u[mask_src] = amp
+                if drive_on:
+                    drive = get_drive(t)
+                    amp = math.sin(t * SOURCE_FREQ) * drive * SOURCE_STRENGTH
+                    mask_src = source_mask & ~solid_wave
+                    u[mask_src] = amp
 
-        boat_gx = boat_pos[0] / cell_w
-        boat_gy = boat_pos[1] / cell_h
-        height = sample_bilinear(u, boat_gx, boat_gy)
-        prev_height = sample_bilinear(u_prev, boat_gx, boat_gy)
-        du = height - prev_height
-        grad_x, grad_y = sample_gradient(u, boat_gx, boat_gy)
-        grad_mag = math.hypot(grad_x, grad_y)
+            boat_gx = boat_pos[0] / cell_w
+            boat_gy = boat_pos[1] / cell_h
+            height = sample_bilinear(u, boat_gx, boat_gy)
+            prev_height = sample_bilinear(u_prev, boat_gx, boat_gy)
+            du = height - prev_height
+            grad_x, grad_y = sample_gradient(u, boat_gx, boat_gy)
+            grad_mag = math.hypot(grad_x, grad_y)
 
-        target_vel = np.zeros(2, dtype=np.float32)
-        if grad_mag > WAVE_MIN_GRAD and abs(du) > WAVE_MIN_DU:
-            dir_sign = -1.0 if du > 0.0 else 1.0
-            dir_x = dir_sign * grad_x / grad_mag
-            dir_y = dir_sign * grad_y / grad_mag
-            wave_speed_grid = abs(du) / (grad_mag + 1e-6)
-            wave_speed_grid = min(wave_speed_grid, WAVE_SPEED_CLAMP)
-            wave_speed_px = wave_speed_grid * min(cell_w, cell_h) * FPS
-            strength = min(1.0, abs(du) * WAVE_STRENGTH_GAIN)
-            target_vel = np.array([dir_x, dir_y], dtype=np.float32)
-            target_vel *= wave_speed_px * strength * WAVE_VELOCITY_GAIN
+            target_vel = np.zeros(2, dtype=np.float32)
+            if grad_mag > WAVE_MIN_GRAD and abs(du) > WAVE_MIN_DU:
+                dir_sign = -1.0 if du > 0.0 else 1.0
+                dir_x = dir_sign * grad_x / grad_mag
+                dir_y = dir_sign * grad_y / grad_mag
+                wave_speed_grid = abs(du) / (grad_mag + 1e-6)
+                wave_speed_grid = min(wave_speed_grid, WAVE_SPEED_CLAMP)
+                wave_speed_px = wave_speed_grid * min(cell_w, cell_h) * FPS
+                strength = min(1.0, abs(du) * WAVE_STRENGTH_GAIN)
+                target_vel = np.array([dir_x, dir_y], dtype=np.float32)
+                target_vel *= wave_speed_px * strength * WAVE_VELOCITY_GAIN
 
-        boat_vel += (target_vel - boat_vel) * BOAT_RESPONSE * dt_sec
-        boat_vel *= BOAT_DRAG
+            boat_vel += (target_vel - boat_vel) * BOAT_RESPONSE * dt_sec
+            boat_vel *= BOAT_DRAG
 
-        speed = float(np.hypot(boat_vel[0], boat_vel[1]))
-        if speed > base_max_speed and speed > 1e-6:
-            boat_vel *= base_max_speed / speed
+            speed = float(np.hypot(boat_vel[0], boat_vel[1]))
+            if speed > base_max_speed and speed > 1e-6:
+                boat_vel *= base_max_speed / speed
 
-        boat_pos += boat_vel * dt_sec
-        boat_pos[0] = max(10.0, min(WIDTH - 10.0, boat_pos[0]))
-        boat_pos[1] = max(10.0, min(HEIGHT - 10.0, boat_pos[1]))
+            boat_pos += boat_vel * dt_sec
+            boat_pos[0] = max(10.0, min(WIDTH - 10.0, boat_pos[0]))
+            boat_pos[1] = max(10.0, min(HEIGHT - 10.0, boat_pos[1]))
 
-        for dock_rect in dock_rects:
-            normal = resolve_circle_rect(boat_pos, boat_radius, dock_rect)
-            if normal is None:
+            for dock_rect in dock_rects:
+                normal = resolve_circle_rect(boat_pos, boat_radius, dock_rect)
+                if normal is None:
+                    continue
+                nx, ny = normal
+                vn = boat_vel[0] * nx + boat_vel[1] * ny
+                if vn < 0.0:
+                    boat_vel[0] -= vn * nx
+                    boat_vel[1] -= vn * ny
+
+            if (
+                boat_pos[0] <= 10.0
+                or boat_pos[0] >= WIDTH - 10.0
+                or boat_pos[1] <= 10.0
+                or boat_pos[1] >= HEIGHT - 10.0
+            ):
+                if not show_message(
+                    screen, clock, "FAIL", FAIL_HOLD_SECONDS, fail_font, (220, 60, 60)
+                ):
+                    running = False
+                    continue
+                u[:] = 0.0
+                u_prev[:] = 0.0
+                u_next[:] = 0.0
+                boat_pos[:] = (WIDTH * 0.6, HEIGHT * 0.55)
+                boat_vel[:] = 0.0
+                boat_angle = -0.3
+                success = False
+                paused = False
+                t = 0.0
+                if not run_countdown(
+                    screen,
+                    clock,
+                    COUNTDOWN_SECONDS,
+                    "GET READY",
+                    ready_font,
+                    countdown_font,
+                    draw_wave_background,
+                ):
+                    running = False
                 continue
-            nx, ny = normal
-            vn = boat_vel[0] * nx + boat_vel[1] * ny
-            if vn < 0.0:
-                boat_vel[0] -= vn * nx
-                boat_vel[1] -= vn * ny
 
-        if speed > 10.0:
-            target_angle = math.atan2(boat_vel[1], boat_vel[0])
-            boat_angle = angle_step(boat_angle, target_angle, BOAT_TURN_RATE * dt_sec)
+            if speed > 10.0:
+                target_angle = math.atan2(boat_vel[1], boat_vel[0])
+                boat_angle = angle_step(boat_angle, target_angle, BOAT_TURN_RATE * dt_sec)
+        else:
+            boat_vel[:] = 0.0
 
         overlay_mask = shadow_mask if show_overlay else None
         render(u, img, color_scale=220.0, overlay=overlay_mask)
@@ -475,7 +820,16 @@ def main():
         screen.blit(rotated, rect)
 
         if goal_rect.colliderect(rect):
-            success = True
+            if not success:
+                success = True
+                if return_on_success:
+                    if not show_message(
+                        screen, clock, "SUCCESS", 2.0, font, (255, 255, 255)
+                    ):
+                        running = False
+                    else:
+                        completed_success = True
+                    running = False
 
         if success:
             text_rect = success_surf.get_rect(center=(WIDTH // 2, HEIGHT // 5))
@@ -492,13 +846,20 @@ def main():
         cv2.imshow("Camera View", cam_frame)
         cv2.imshow("Expected Camera Image", expected)
         cv2.imshow("Contours", contours_vis)
-        cv2.imshow("Shadow Mask (Screen)", shadow_screen)
         cv2.waitKey(1)
 
     cap_stream.release()
     pygame.quit()
     cv2.destroyAllWindows()
+    return completed_success
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Level 1 - Dock")
+    parser.add_argument(
+        "--cached-calibration",
+        action="store_true",
+        help="Use cached calibration from calibration_cache.npz.",
+    )
+    args = parser.parse_args()
+    main(cached_calibration=args.cached_calibration, return_on_success=False)
