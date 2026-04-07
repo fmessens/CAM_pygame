@@ -155,15 +155,40 @@ def photometric_calibration(cap, screen, mask):
     return a, b
 
 
+def wait_for_live_camera_capture(cap, window_name, settle_seconds=0.5):
+    last_frame = None
+    settle_until = time.time() + settle_seconds
+
+    while time.time() < settle_until:
+        ret, frame = cap.read()
+        if ret:
+            last_frame = frame
+            cv2.imshow(window_name, frame)
+        cv2.waitKey(1)
+        time.sleep(0.01)
+
+    while True:
+        ret, frame = cap.read()
+        if ret:
+            last_frame = frame
+            cv2.imshow(window_name, frame)
+
+        key = cv2.waitKey(1)
+        if key != -1 and last_frame is not None:
+            return last_frame
+
+        time.sleep(0.01)
+
+
 def capture_projected_frame(cap, screen, color, mask, label):
     screen.fill(color)
     pygame.display.flip()
+    pygame.event.pump()
 
     print(f"\n=== {label} FRAME PROJECTED ===")
     print("Press any key to capture from camera.")
-    cv2.waitKey(0)
 
-    ret, frame = cap.read()
+    frame = wait_for_live_camera_capture(cap, f"Live capture - {label}")
     cam_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     cam_masked = cv2.bitwise_and(cam_gray, cam_gray, mask=mask)
 

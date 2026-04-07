@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Phone WebPad</title>
+  <link rel="stylesheet" href="/static/controller.css">
+</head>
+<body>
+  <script src="/config.js"></script>
+  <main class="layout">
+    <div class="rotate-warning">
+      <div class="rotate-card">
+        <h1>Rotate to landscape</h1>
+        <p>The controller is built for two-thumb play.</p>
+      </div>
+    </div>
+
+    <header class="topbar">
+      <span class="title" id="app-title">MOBILE WEBPAD DEMO</span>
+      <div class="status" id="connection-status">CONNECTING</div>
+    </header>
+
+    <section class="controller-shell">
+      <section class="dpad-panel panel">
+        <div class="panel-label">MOVE</div>
+        <div class="dpad">
+          <button class="button button-dpad up" data-button="up">UP</button>
+          <button class="button button-dpad left" data-button="left">LEFT</button>
+          <button class="button button-dpad right" data-button="right">RIGHT</button>
+          <button class="button button-dpad down" data-button="down">DOWN</button>
+          <div class="dpad-core"></div>
+        </div>
+      </section>
+
+      <section class="meta-panel panel">
+        <div class="panel-label">SYSTEM</div>
+        <div class="menu-buttons">
+          <button class="button button-menu" data-button="start">START</button>
+        </div>
+        <p class="helper-note" id="helper-note">A / UP JUMP<br>B DASH</p>
+      </section>
+
+      <section class="action-panel panel">
+        <div class="panel-label">ACTION</div>
+        <div class="action-cluster">
+          <button class="button button-action b" data-button="b">B</button>
+          <button class="button button-action a" data-button="a">A</button>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script src="/static/controller.js"></script>
+</body>
+</html>
