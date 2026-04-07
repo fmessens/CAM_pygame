@@ -434,6 +434,303 @@ def apply_heat_tint(image_rgb, heat_field, shadow_mask):
     image_rgb[:] = img_f.astype(np.uint8)
 
 
+def surface_to_camera_gray_masked(surface, H, mask, h_cam, w_cam):
+    surface_rgb = pygame.surfarray.array3d(surface)
+    surface_rgb_cv = np.swapaxes(surface_rgb, 0, 1)
+    surface_gray = cv2.cvtColor(surface_rgb_cv, cv2.COLOR_RGB2GRAY)
+    warped_gray = cv2.warpPerspective(surface_gray, H, (w_cam, h_cam))
+    return cv2.bitwise_and(warped_gray, warped_gray, mask=mask)
+
+
+def sample_heat_region(heat_field, rect, screen_width, screen_height):
+    if rect.width <= 0 or rect.height <= 0:
+        return 0.0
+
+    left = clamp(rect.left, 0, screen_width - 1)
+    top = clamp(rect.top, 0, screen_height - 1)
+    right = clamp(rect.right, left + 1, screen_width)
+    bottom = clamp(rect.bottom, top + 1, screen_height)
+
+    x0 = int((left / screen_width) * GRID_W)
+    x1 = int(math.ceil((right / screen_width) * GRID_W))
+    y0 = int((top / screen_height) * GRID_H)
+    y1 = int(math.ceil((bottom / screen_height) * GRID_H))
+
+    x0 = clamp(x0, 0, GRID_W - 1)
+    x1 = clamp(x1, x0 + 1, GRID_W)
+    y0 = clamp(y0, 0, GRID_H - 1)
+    y1 = clamp(y1, y0 + 1, GRID_H)
+
+    region = heat_field[y0:y1, x0:x1]
+    if region.size == 0:
+        return 0.0
+    return float(0.55 * np.mean(region) + 0.45 * np.max(region))
+
+
+def build_platforms(width, height):
+    ground_height = max(GROUND_MIN_HEIGHT, int(height * GROUND_HEIGHT_RATIO))
+    ground_rect = pygame.Rect(0, height - ground_height, width, ground_height)
+
+    floating_width = int(width * FLOATING_PLATFORM_WIDTH_RATIO)
+    floating_rect = pygame.Rect(
+        (width - floating_width) // 2,
+        int(height * FLOATING_PLATFORM_HEIGHT_RATIO),
+        floating_width,
+        PLATFORM_HEIGHT,
+    )
+
+    spawn_x = floating_rect.centerx - PLAYER_SIZE[0] / 2.0
+    spawn_y = floating_rect.top - PLAYER_SIZE[1]
+    return [ground_rect, floating_rect], (spawn_x, spawn_y)
+
+
+def draw_platforms(screen, platforms):
+    for rect in platforms:
+        radius = min(10, rect.height // 2)
+        pygame.draw.rect(screen, PLATFORM_COLOR, rect, border_radius=radius)
+        top_band = pygame.Rect(rect.left, rect.top, rect.width, max(6, rect.height // 3))
+        pygame.draw.rect(screen, PLATFORM_TOP_COLOR, top_band, border_radius=radius)
+        pygame.draw.rect(screen, PLATFORM_OUTLINE, rect, 2, border_radius=radius)
+
+
+class Player:
+    def __init__(self, spawn_pos):
+        self.spawn_pos = np.array(spawn_pos, dtype=np.float32)
+        self.rect = pygame.Rect(
+            int(round(spawn_pos[0])),
+            int(round(spawn_pos[1])),
+            PLAYER_SIZE[0],
+            PLAYER_SIZE[1],
+        )
+        self.pos = self.spawn_pos.copy()
+        self.vx = 0.0
+        self.vy = 0.0
+        self.on_ground = False
+        self.parachute_open = False
+        self.heat_value = 0.0
+        self.heat_lift = 0.0
+        self.coyote_timer = 0.0
+
+    def reset(self):
+        self.pos[:] = self.spawn_pos
+        self.vx = 0.0
+        self.vy = 0.0
+        self.on_ground = True
+        self.parachute_open = False
+        self.heat_value = 0.0
+        self.heat_lift = 0.0
+        self.coyote_timer = PLAYER_COYOTE_TIME
+        self._sync_rect()
+
+    def _sync_rect(self):
+        self.rect.topleft = (int(round(self.pos[0])), int(round(self.pos[1])))
+
+    def jump(self):
+        if not self.parachute_open and (self.on_ground or self.coyote_timer > 0.0):
+            self.vy = PLAYER_JUMP_SPEED
+            self.on_ground = False
+            self.coyote_timer = 0.0
+
+    def toggle_parachute(self):
+        self.parachute_open = not self.parachute_open
+
+    def get_canopy_rect(self):
+        left = int(round(self.pos[0] + self.rect.width / 2.0 - PARACHUTE_CANOPY_WIDTH / 2.0))
+        top = int(round(self.pos[1] - PARACHUTE_CANOPY_HEIGHT - 10))
+        return pygame.Rect(left, top, PARACHUTE_CANOPY_WIDTH, PARACHUTE_CANOPY_HEIGHT)
+
+    def get_heat_probe_rect(self):
+        canopy_rect = self.get_canopy_rect()
+        probe_left = canopy_rect.left + 8
+        probe_width = max(12, canopy_rect.width - 16)
+        probe_height = max(16, self.rect.bottom - canopy_rect.top)
+        return pygame.Rect(probe_left, canopy_rect.top, probe_width, probe_height)
+
+    def get_exclusion_rect(self):
+        if not self.parachute_open:
+            return self.rect.inflate(10, 10)
+        return self.rect.union(self.get_canopy_rect()).inflate(14, 14)
+
+    def _resolve_collisions(self, platforms, axis):
+        for platform in platforms:
+            if not self.rect.colliderect(platform):
+                continue
+
+            if axis == "x":
+                if self.vx > 0.0:
+                    self.rect.right = platform.left
+                elif self.vx < 0.0:
+                    self.rect.left = platform.right
+                self.pos[0] = float(self.rect.x)
+                continue
+
+            if self.vy > 0.0:
+                self.rect.bottom = platform.top
+                self.on_ground = True
+            elif self.vy < 0.0:
+                self.rect.top = platform.bottom
+            self.pos[1] = float(self.rect.y)
+            self.vy = 0.0
+
+    def update(self, dt_sec, keys, platforms, heat_field, screen_width, screen_height):
+        move_dir = 0
+        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
+            move_dir -= 1
+        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+            move_dir += 1
+
+        control_scale = 0.78 if self.parachute_open else 1.0
+        self.vx = move_dir * PLAYER_MOVE_SPEED * control_scale
+
+        gravity = PLAYER_GRAVITY
+        max_fall_speed = PLAYER_MAX_FALL_SPEED
+        self.heat_value = 0.0
+        self.heat_lift = 0.0
+
+        if self.parachute_open:
+            gravity *= PARACHUTE_GRAVITY_SCALE
+            max_fall_speed = PARACHUTE_MAX_FALL_SPEED
+            self.heat_value = sample_heat_region(
+                heat_field,
+                self.get_heat_probe_rect(),
+                screen_width,
+                screen_height,
+            )
+            self.heat_lift = max(0.0, self.heat_value - PARACHUTE_LIFT_THRESHOLD)
+
+        self.vy = min(self.vy + gravity * dt_sec, max_fall_speed)
+
+        if self.parachute_open and self.heat_lift > 0.0:
+            self.vy -= self.heat_lift * PARACHUTE_LIFT_ACCEL * dt_sec
+            lift_strength = clamp(
+                self.heat_lift / max(1e-6, 1.0 - PARACHUTE_LIFT_THRESHOLD),
+                0.0,
+                1.0,
+            )
+            target_rise_speed = -(
+                PARACHUTE_RISE_SPEED_MIN
+                + lift_strength * (PARACHUTE_RISE_SPEED_MAX - PARACHUTE_RISE_SPEED_MIN)
+            )
+            if self.vy > target_rise_speed:
+                self.vy = target_rise_speed
+
+        self.pos[0] += self.vx * dt_sec
+        self._sync_rect()
+        self._resolve_collisions(platforms, "x")
+        self.pos[0] = clamp(self.pos[0], 0.0, screen_width - self.rect.width)
+        self._sync_rect()
+
+        self.pos[1] += self.vy * dt_sec
+        self._sync_rect()
+        self.on_ground = False
+        self._resolve_collisions(platforms, "y")
+
+        if self.on_ground:
+            self.coyote_timer = PLAYER_COYOTE_TIME
+        else:
+            self.coyote_timer = max(0.0, self.coyote_timer - dt_sec)
+
+        if self.rect.top < 0:
+            self.rect.top = 0
+            self.pos[1] = float(self.rect.y)
+            self.vy = max(0.0, self.vy)
+
+        if self.rect.top > screen_height + PLAYER_RESPAWN_Y_MARGIN:
+            self.reset()
+
+
+def draw_player(screen, player):
+    if player.parachute_open:
+        canopy_rect = player.get_canopy_rect()
+        if player.heat_lift > 0.0:
+            glow_strength = clamp(player.heat_lift * 2.8, 0.0, 1.0)
+            glow_rect = canopy_rect.union(player.rect).inflate(36, 44)
+            glow_surface = pygame.Surface(glow_rect.size, pygame.SRCALPHA)
+            alpha = int(90 * glow_strength)
+            pygame.draw.ellipse(
+                glow_surface,
+                (*LIFT_GLOW_COLOR, alpha),
+                glow_surface.get_rect(),
+            )
+            screen.blit(glow_surface, glow_rect.topleft)
+
+        canopy_points = [
+            (canopy_rect.left, canopy_rect.bottom - 2),
+            (canopy_rect.left + 12, canopy_rect.top + 6),
+            (canopy_rect.centerx, canopy_rect.top),
+            (canopy_rect.right - 12, canopy_rect.top + 6),
+            (canopy_rect.right, canopy_rect.bottom - 2),
+        ]
+        pygame.draw.polygon(screen, PARACHUTE_COLOR, canopy_points)
+        pygame.draw.polygon(screen, PARACHUTE_HIGHLIGHT, canopy_points, 2)
+
+        harness_top = player.rect.top + 6
+        line_targets = [
+            (player.rect.left + 6, harness_top),
+            (player.rect.centerx, harness_top + 2),
+            (player.rect.right - 6, harness_top),
+        ]
+        line_sources = [
+            canopy_points[0],
+            (canopy_rect.centerx, canopy_rect.bottom - 3),
+            canopy_points[-1],
+        ]
+        for source, target in zip(line_sources, line_targets):
+            pygame.draw.line(screen, PARACHUTE_HIGHLIGHT, source, target, 2)
+
+    pygame.draw.rect(screen, PLAYER_BODY_COLOR, player.rect, border_radius=12)
+    pygame.draw.rect(screen, PLAYER_OUTLINE_COLOR, player.rect, 2, border_radius=12)
+
+    head_center = (player.rect.centerx, player.rect.top + 12)
+    pygame.draw.circle(screen, PLAYER_HEAD_COLOR, head_center, 11)
+    pygame.draw.circle(screen, PLAYER_OUTLINE_COLOR, head_center, 11, 2)
+
+    torso_top = player.rect.top + 18
+    torso_bottom = player.rect.bottom - 8
+    pygame.draw.line(
+        screen,
+        PLAYER_OUTLINE_COLOR,
+        (player.rect.centerx, torso_top),
+        (player.rect.centerx, torso_bottom),
+        3,
+    )
+    pygame.draw.line(
+        screen,
+        PLAYER_OUTLINE_COLOR,
+        (player.rect.centerx, player.rect.top + 26),
+        (player.rect.left + 7, player.rect.top + 34),
+        3,
+    )
+    pygame.draw.line(
+        screen,
+        PLAYER_OUTLINE_COLOR,
+        (player.rect.centerx, player.rect.top + 26),
+        (player.rect.right - 7, player.rect.top + 34),
+        3,
+    )
+    pygame.draw.line(
+        screen,
+        PLAYER_OUTLINE_COLOR,
+        (player.rect.centerx, torso_bottom),
+        (player.rect.left + 8, player.rect.bottom - 2),
+        3,
+    )
+    pygame.draw.line(
+        screen,
+        PLAYER_OUTLINE_COLOR,
+        (player.rect.centerx, torso_bottom),
+        (player.rect.right - 8, player.rect.bottom - 2),
+        3,
+    )
+
+
+def draw_world(screen, frame_surface, grid_image, platforms, player):
+    pygame.surfarray.blit_array(frame_surface, grid_image.swapaxes(0, 1))
+    pygame.transform.scale(frame_surface, screen.get_size(), screen)
+    draw_platforms(screen, platforms)
+    draw_player(screen, player)
+
+
 def main(image_path=None, cached_calibration=False):
     pygame.init()
     screen, width, height, display_index, monitor, monitor_count = create_fullscreen_display(
@@ -441,7 +738,7 @@ def main(image_path=None, cached_calibration=False):
     )
     global WIDTH, HEIGHT
     WIDTH, HEIGHT = width, height
-    pygame.display.set_caption("Level 3 - Heat Shadow Experiment")
+    pygame.display.set_caption("Level 3 - Heat Glider")
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("Arial", 52, bold=True)
     ready_font = pygame.font.SysFont("Arial", 64, bold=True)
@@ -485,23 +782,25 @@ def main(image_path=None, cached_calibration=False):
     )
     heat_field = np.zeros((GRID_H, GRID_W), dtype=np.float32)
     frame_surface = pygame.Surface((GRID_W, GRID_H))
-
-    pygame.surfarray.blit_array(frame_surface, bg_img.swapaxes(0, 1))
-    pygame.transform.scale(frame_surface, screen.get_size(), screen)
-    pygame.display.flip()
+    last_stage_img = bg_img.copy()
+    platforms, spawn_pos = build_platforms(width, height)
+    player = Player(spawn_pos)
+    player.on_ground = True
+    player.coyote_timer = PLAYER_COYOTE_TIME
 
     print("Background: level_1-style neutral (mid-gray)")
-    print("Controls: ESC=quit, V=toggle shadow overlay, C=clear heat")
-    print("Experiment mode only: no game objectives.")
+    print("Controls: A/D or arrows=move, Space/Up/W=jump, P=toggle parachute")
+    print("Extra controls: V=toggle shadow overlay, C=clear heat, ESC=quit")
 
     running = True
     show_overlay = False
     frame_count = 0
     t_prev = time.time()
     debug_object_count = 0
+    prev_player_cam_mask = None
 
     def draw_heat_background(dt_sec):
-        nonlocal heat_field, debug_object_count
+        nonlocal heat_field, debug_object_count, prev_player_cam_mask, last_stage_img
 
         ret, cam_frame = cap_stream.read()
         if not ret:
@@ -514,7 +813,26 @@ def main(image_path=None, cached_calibration=False):
         warped_proj_gray_masked = screen_to_camera_space(screen, H, mask, h_cam, w_cam)
         expected = gain_offset_calibration(warped_proj_gray_masked, a_map, b_map)
 
-        mask_diff = np.zeros_like(cam_gray_masked, dtype=bool)
+        player_mask_surface = pygame.Surface(screen.get_size())
+        player_mask_surface.fill((0, 0, 0))
+        pygame.draw.rect(
+            player_mask_surface,
+            (255, 255, 255),
+            player.get_exclusion_rect(),
+            border_radius=18,
+        )
+        player_cam_mask = surface_to_camera_gray_masked(
+            player_mask_surface,
+            H,
+            mask,
+            h_cam,
+            w_cam,
+        ) > 0
+
+        mask_diff = player_cam_mask
+        if prev_player_cam_mask is not None:
+            mask_diff = np.logical_or(mask_diff, prev_player_cam_mask)
+
         objects, contours_vis, shadow_mask_u8 = shadow_object_detection_calibrated(
             cam_gray_masked, expected, b_map, mask_diff, H_inv
         )
@@ -541,8 +859,10 @@ def main(image_path=None, cached_calibration=False):
         if show_overlay:
             warped_img[shadow_mask] = (255, 110, 20)
 
+        last_stage_img = warped_img
         pygame.surfarray.blit_array(frame_surface, warped_img.swapaxes(0, 1))
         pygame.transform.scale(frame_surface, screen.get_size(), screen)
+        prev_player_cam_mask = player_cam_mask
 
         debug_object_count = len(objects)
         if SHOW_DEBUG_WINDOWS:
@@ -558,7 +878,7 @@ def main(image_path=None, cached_calibration=False):
         screen,
         clock,
         COUNTDOWN_SECONDS,
-        "HEAT EXPERIMENT",
+        "HEAT GLIDER",
         ready_font,
         countdown_font,
         draw_frame=draw_heat_background,
@@ -568,8 +888,12 @@ def main(image_path=None, cached_calibration=False):
         cv2.destroyAllWindows()
         return
 
+    draw_world(screen, frame_surface, last_stage_img, platforms, player)
+    pygame.display.flip()
+
     while running:
         dt_sec = min(clock.tick(FPS) / 1000.0, 0.1)
+        jump_requested = False
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -581,17 +905,33 @@ def main(image_path=None, cached_calibration=False):
                     show_overlay = not show_overlay
                 elif event.key == pygame.K_c:
                     heat_field[:] = 0.0
+                elif event.key == PARACHUTE_TOGGLE_KEY:
+                    player.toggle_parachute()
+                elif event.key in (pygame.K_SPACE, pygame.K_UP, pygame.K_w):
+                    jump_requested = True
 
         if not draw_heat_background(dt_sec):
             running = False
             continue
+
+        if jump_requested:
+            player.jump()
+        player.update(
+            dt_sec,
+            pygame.key.get_pressed(),
+            platforms,
+            heat_field,
+            width,
+            height,
+        )
+        draw_world(screen, frame_surface, last_stage_img, platforms, player)
         pygame.display.flip()
 
         if frame_count % 60 == 0:
             fps = 1.0 / max(1e-6, time.time() - t_prev)
             heat_peak = float(np.max(heat_field))
             print(
-                f"FPS: {fps:.1f} | Shadows: {debug_object_count} | Heat peak: {heat_peak:.2f}"
+                f"FPS: {fps:.1f} | Shadows: {debug_object_count} | Heat peak: {heat_peak:.2f} | Player heat: {player.heat_value:.2f} | Parachute: {'open' if player.parachute_open else 'closed'}"
             )
             t_prev = time.time()
         frame_count += 1
@@ -602,7 +942,7 @@ def main(image_path=None, cached_calibration=False):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Level 3 - Heat Shadow Experiment")
+    parser = argparse.ArgumentParser(description="Level 3 - Heat Glider")
     parser.add_argument(
         "--image",
         default=os.path.join("images", "galaxy-1489300667bhk.jpg"),
