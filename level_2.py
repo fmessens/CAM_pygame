@@ -493,7 +493,7 @@ def run_countdown(screen, clock, seconds, label_font, count_font):
     return True
 
 
-def main(image_path, cached_calibration=False):
+def main(image_path, cached_calibration=False, camera_index=1):
     pygame.init()
     screen, width, height, display_index, monitor, monitor_count = create_fullscreen_display(
         TARGET_DISPLAY_INDEX
@@ -524,7 +524,7 @@ def main(image_path, cached_calibration=False):
         H, mask, a_map, b_map = calibration
         H_inv = np.linalg.inv(H)
     else:
-        cap = get_camera_capture()
+        cap = get_camera_capture(camera_index)
         H, mask, _, a_map, b_map = calibrate_system(
             cap=cap, screen=screen, WIDTH=width, HEIGHT=height
         )
@@ -537,7 +537,7 @@ def main(image_path, cached_calibration=False):
         H_inv, width, height, GRID_W, GRID_H, cam_w, cam_h
     )
 
-    cap_stream = VideoStream(0)
+    cap_stream = VideoStream(camera_index)
 
     bg_img = load_background_image(image_path, (GRID_W, GRID_H))
     bg_surface = load_background_surface(image_path, (width, height))
@@ -789,5 +789,15 @@ if __name__ == "__main__":
         action="store_true",
         help="Use cached calibration from calibration_cache.npz.",
     )
+    parser.add_argument(
+        "--camera-index",
+        type=int,
+        default=1,
+        help="OpenCV camera index to use. This setup detected the secondary webcam at index 1.",
+    )
     args = parser.parse_args()
-    main(args.image, cached_calibration=args.cached_calibration)
+    main(
+        args.image,
+        cached_calibration=args.cached_calibration,
+        camera_index=args.camera_index,
+    )
