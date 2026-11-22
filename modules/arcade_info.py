@@ -1,6 +1,5 @@
 """Technical notes and the menu’s fullscreen audience display."""
 
-import pygame
 from pygame._sdl2.video import Renderer, Texture, Window
 
 
@@ -58,29 +57,18 @@ class InfoDisplay:
         )
         self.renderer = Renderer(self.window)
         self.renderer.draw_color = (16, 23, 29, 255)
-        self.viewport = pygame.Rect(0, 0, *self.window.size)
         self.view = None
 
     def draw(self, view):
         self.view = view
-        width, height = self.window.size
-        self.viewport = view.surface.get_rect().fit((0, 0, width, height))
         texture = Texture.from_surface(self.renderer, view.surface)
         self.renderer.clear()
-        self.renderer.blit(texture, self.viewport)
+        self.renderer.blit(texture, view.viewport(self.window.size))
         self.renderer.present()
 
     def handle_pointer(self, event):
-        if self.view is None or not self.viewport.collidepoint(event.pos):
-            return
-        x, y = event.pos
-        width, height = self.view.surface.get_size()
-        point = ((x - self.viewport.x) * width // self.viewport.width,
-                 (y - self.viewport.y) * height // self.viewport.height)
-        if event.type == pygame.MOUSEMOTION:
-            self.view.mouse = point
-        elif event.button == 1:
-            self.view.click(point)
+        if self.view is not None:
+            self.view.handle_pointer(event, self.window.size)
 
     def close(self):
         del self.renderer

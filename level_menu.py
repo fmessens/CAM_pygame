@@ -68,6 +68,8 @@ EXPERIMENTAL = (
     Level("level_6", "Pressure Stream", "Trace the current around shadows with bubbles.", "#72ded9"),
     Level("level_6_tris", "Wind Wakes", "Follow streaks through a turbulent wind field.", "#72ded9"),
     Level("level_6_quater", "Vortex Bubbles", "Follow green bubbles and count the active vortices.", "#a4df9b"),
+    Level("level_6_quinquies", "Windward", "Sail with the wind and fire on rival ships.", "#f5cb83",
+          phone=True, controller_path="/windward/controller"),
     Level("level_8", "Shadow Percussion", "Bounce balls off shadows to play instruments.", "#f5cb83"),
 )
 
@@ -200,6 +202,45 @@ class View:
                 action()
                 return
 
+    def viewport(self, size):
+        return self.surface.get_rect().fit((0, 0, *size))
+
+    def handle_pointer(self, event, size):
+        viewport = self.viewport(size)
+        if not viewport.collidepoint(event.pos):
+            if event.type == pygame.MOUSEMOTION:
+                self.mouse = (-1, -1)
+            return
+        x, y = event.pos
+        width, height = self.surface.get_size()
+        point = ((x - viewport.x) * width // viewport.width,
+                 (y - viewport.y) * height // viewport.height)
+        if event.type == pygame.MOUSEMOTION:
+            self.mouse = point
+        elif event.button == 1:
+            self.click(point)
+
+    def fullscreen_button(self, position, fullscreen, action):
+        rect = pygame.Rect(*position, 36, 36)
+        pygame.draw.rect(self.surface, HOVER if rect.collidepoint(self.mouse) else PANEL,
+                         rect, border_radius=8)
+        for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+            corner = (rect.centerx + sx * 8, rect.centery + sy * 8)
+            direction = 1 if fullscreen else -1
+            if fullscreen:
+                corner = (rect.centerx + sx * 3, rect.centery + sy * 3)
+            pygame.draw.line(self.surface, INK, corner, (corner[0] + direction * sx * 5, corner[1]), 2)
+            pygame.draw.line(self.surface, INK, corner, (corner[0], corner[1] + direction * sy * 5), 2)
+        self.buttons.append((rect, action))
+
+
+def toggle_fullscreen(window, fullscreen):
+    if fullscreen:
+        window.set_windowed()
+    else:
+        window.set_fullscreen(desktop=True)
+    return not fullscreen
+
 
 class PhoneSetup:
     def __init__(self, menu: Menu, level: Level):
@@ -208,10 +249,12 @@ class PhoneSetup:
         menu_x, menu_y = menu.window.position
         self.window = Window(
             f"{level.title} · Phone setup", size=PHONE_SIZE,
-            position=(menu_x + 30, menu_y + 42),
+            position=(menu_x + 30, menu_y + 42), resizable=True,
         )
         self.renderer = Renderer(self.window)
+        self.renderer.draw_color = (16, 23, 29, 255)
         self.view = View(pygame.Surface(PHONE_SIZE))
+        self.fullscreen = False
         self.message = "Checking Windows Mobile Hotspot…"
         self.hotspot_hint = ""
         self.host = ""
@@ -231,6 +274,9 @@ class PhoneSetup:
     def close(self):
         del self.renderer
         self.window.destroy()
+
+    def toggle_fullscreen(self):
+        self.fullscreen = toggle_fullscreen(self.window, self.fullscreen)
 
     def open_windows_settings(self):
         try:
@@ -363,12 +409,14 @@ class PhoneSetup:
         view.clear()
         view.text("Connect your phones", (24, 20), 34, bold=True)
         view.text(self.level.title, (25, 67), 17, MINT)
+        view.fullscreen_button((563, 22), self.fullscreen, self.toggle_fullscreen)
         if self.codes:
             self.draw_codes()
         else:
             self.draw_hotspot_notice()
         texture = Texture.from_surface(self.renderer, view.surface)
-        self.renderer.blit(texture)
+        self.renderer.clear()
+        self.renderer.blit(texture, view.viewport(self.window.size))
         self.renderer.present()
 
     def draw_hotspot_notice(self):
@@ -454,16 +502,18 @@ class Menu:
         self.phone: PhoneSetup | None = None
         self.level_controls = None
         self.stop_requested = False
-        self.phone_focused = False
         self.experimental = False
         self.experimental_page = 0
         self.show_technology = False
         self.info_display: InfoDisplay | None = None
         self.calibration_prompt = False
         self.running = True
+        self.fullscreen = False
         self.status = cache_status(camera_index)[1]
-        self.view = View(pygame.display.set_mode(MENU_SIZE))
+        pygame.display.set_mode(MENU_SIZE, pygame.RESIZABLE)
+        self.view = View(pygame.Surface(MENU_SIZE))
         self.window = Window.from_display_module()
+        self.focused_window_id = self.window.id
         pygame.display.set_caption("Shadow Arcade")
         pygame.key.stop_text_input()
 
@@ -515,6 +565,7 @@ class Menu:
             self.status = cache_status(self.camera_index)[1]
         self.window.show()
         self.window.focus()
+        self.focused_window_id = self.window.id
 
     def start_calibration(self):
         self.calibration_prompt = False
@@ -531,7 +582,7 @@ class Menu:
         self.close_phone()
         if level.phone:
             self.phone = PhoneSetup(self, level)
-            self.phone_focused = True
+            self.focused_window_id = self.phone.window.id
             if self.phone_wifi_qr is not None:
                 self.phone.message = "Use the PC’s Wi-Fi connection to your phone’s hotspot."
                 self.phone.hotspot_checked = True
@@ -541,21 +592,22 @@ class Menu:
 
     def close_phone(self):
         if self.phone is not None:
+            if self.focused_window_id == self.phone.window.id:
+                self.focused_window_id = self.window.id
             self.phone.close()
             self.phone = None
-            self.phone_focused = False
 
     def dismiss_phone(self):
         if self.child is None:
             self.close_phone()
         else:
             self.phone.window.hide()
-            self.phone_focused = False
+            self.focused_window_id = self.window.id
 
     def show_phone(self):
         self.phone.window.show()
         self.phone.window.focus()
-        self.phone_focused = True
+        self.focused_window_id = self.phone.window.id
 
     def toggle_section(self):
         self.experimental = not self.experimental
@@ -565,11 +617,16 @@ class Menu:
     def toggle_technology(self):
         self.show_technology = not self.show_technology
 
+    def toggle_fullscreen(self):
+        self.fullscreen = toggle_fullscreen(self.window, self.fullscreen)
+
     def change_experimental_page(self, delta):
         self.experimental_page += delta
 
     def toggle_info_display(self):
         if self.info_display is not None:
+            if self.focused_window_id == self.info_display.window.id:
+                self.focused_window_id = self.window.id
             self.info_display.close()
             self.info_display = None
             return
@@ -610,9 +667,10 @@ class Menu:
         else:
             self.draw_levels()
         pygame.draw.line(view.surface, HOVER, (29, 526), (906, 526))
-        view.surface.set_clip((29, 535, 442, 42))
+        view.surface.set_clip((29, 535, 391, 42))
         view.text(self.status, (29, 546), 17, MUTED)
         view.surface.set_clip(None)
+        view.fullscreen_button((427, 539), self.fullscreen, self.toggle_fullscreen)
         view.button((475, 539, 126, 36), "Close screen" if self.info_display else "Third screen",
                     self.toggle_info_display)
         if self.phone is not None:
@@ -622,6 +680,14 @@ class Menu:
             view.button((754, 539, 152, 36), "Level controls", self.level_controls.show)
         if self.calibration_prompt:
             self.draw_calibration_prompt()
+        screen = pygame.display.get_surface()
+        viewport = view.viewport(screen.get_size())
+        if viewport.size == MENU_SIZE:
+            frame = view.surface
+        else:
+            frame = pygame.transform.smoothscale(view.surface, viewport.size)
+        screen.fill(BG)
+        screen.blit(frame, viewport)
         pygame.display.flip()
 
     def draw_levels(self):
@@ -709,13 +775,22 @@ class Menu:
             for event in pygame.event.get():
                 event_window = getattr(event, "window", None)
                 window_id = event_window.id if event_window is not None else None
+                if event.type == pygame.WINDOWFOCUSGAINED and window_id is not None:
+                    self.focused_window_id = window_id
+                elif event.type == pygame.KEYDOWN and window_id is None:
+                    window_id = self.focused_window_id
                 targets_menu = window_id == self.window.id
                 phone = self.phone
                 targets_phone = phone is not None and window_id == phone.window.id
                 info = self.info_display
                 targets_info = info is not None and window_id == info.window.id
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
-                    self.toggle_info_display()
+                    if getattr(event, "mod", 0) & pygame.KMOD_SHIFT or targets_info:
+                        self.toggle_info_display()
+                    elif targets_phone:
+                        phone.toggle_fullscreen()
+                    elif targets_menu:
+                        self.toggle_fullscreen()
                     continue
                 if targets_info:
                     if event.type == pygame.WINDOWCLOSE:
@@ -724,19 +799,11 @@ class Menu:
                         info.handle_pointer(event)
                     elif event.type == pygame.DROPFILE and phone is not None:
                         phone.import_wifi_qr(event.file)
-                    elif event.type == pygame.WINDOWFOCUSGAINED:
-                        self.phone_focused = False
                     continue
                 controls = self.level_controls
                 if controls is not None and window_id == controls.window.id:
-                    if event.type == pygame.WINDOWFOCUSGAINED:
-                        self.phone_focused = False
                     controls.handle(event)
                     continue
-                if event.type == pygame.WINDOWFOCUSGAINED:
-                    self.phone_focused = targets_phone
-                if event_window is None and event.type == pygame.KEYDOWN:
-                    targets_phone = phone is not None and self.phone_focused
                 if event.type == pygame.WINDOWCLOSE and targets_menu:
                     self.quit()
                     if not self.running:
@@ -744,22 +811,23 @@ class Menu:
                 elif targets_phone:
                     if event.type == pygame.WINDOWCLOSE:
                         self.dismiss_phone()
-                    elif event.type == pygame.MOUSEMOTION:
-                        phone.view.mouse = event.pos
-                    elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                        phone.view.click(event.pos)
+                    elif event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN):
+                        phone.view.handle_pointer(event, phone.window.size)
                     elif event.type == pygame.DROPFILE:
                         phone.import_wifi_qr(event.file)
                     elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                        self.dismiss_phone()
-                elif event.type == pygame.MOUSEMOTION and targets_menu:
-                    self.view.mouse = event.pos
-                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and targets_menu:
-                    self.view.click(event.pos)
+                        if phone.fullscreen:
+                            phone.toggle_fullscreen()
+                        else:
+                            self.dismiss_phone()
+                elif targets_menu and event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN):
+                    self.view.handle_pointer(event, self.window.size)
                     if not self.running:
                         return
-                elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE and (targets_menu or window_id is None):
-                    if self.calibration_prompt:
+                elif targets_menu and event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    if self.fullscreen:
+                        self.toggle_fullscreen()
+                    elif self.calibration_prompt:
                         self.close_calibration_prompt()
                     elif self.show_technology:
                         self.toggle_technology()

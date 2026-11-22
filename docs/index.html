@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Shadow Arcade turns real shadows into game geometry with a camera, a projector, and real-time wave and fluid solvers.">
+  <meta name="theme-color" content="#101917">
+  <title>Shadow Arcade · CAM_pygame</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header wrap">
+    <a class="wordmark" href="#top">CAM<span>_</span>pygame</a>
+    <nav aria-label="Main navigation">
+      <a href="#projection">Projection</a>
+      <a href="#solvers">Solvers</a>
+      <a href="#setup">Setup</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero wrap" aria-labelledby="title">
+      <div class="intro">
+        <h1 id="title">Shadow<br>Arcade<span>.</span></h1>
+        <p>A projector draws the playfield. A camera watches it. Move an object into the beam and its shadow can block waves, redirect a stream, or become a platform.</p>
+        <div class="actions">
+          <a class="button" href="#demo">Watch the demo</a>
+          <a href="https://github.com/fmessens/CAM_pygame">View on GitHub</a>
+        </div>
+      </div>
+      <figure id="demo">
+        <video controls playsinline preload="none" width="480" height="860"
+               poster="assets/shadow-arcade.jpg" aria-label="Water Wakes projector demo"
+               aria-describedby="demo-caption">
+          <source src="assets/shadow-arcade.mp4" type="video/mp4">
+        </video>
+        <figcaption id="demo-caption">Water Wakes · Physical objects cast curved shadows across the projected flow. <a href="assets/shadow-arcade.mp4">Open MP4</a></figcaption>
+      </figure>
+    </section>
+
+    <section id="projection" class="section wrap" aria-labelledby="projection-title">
+      <h2 id="projection-title">From light to game geometry</h2>
+      <p class="lead">The software compares what it sent to the projector with what the camera actually sees.</p>
+      <ol class="pipeline">
+        <li>
+          <h3>Align the images</h3>
+          <p>Project a checkerboard and find its corners with OpenCV. A red dot marks the upper-left square so the board can be oriented. The fitted homography <var>H</var> maps projector coordinates to camera coordinates.</p>
+        </li>
+        <li>
+          <h3>Predict the brightness</h3>
+          <p>Capture black and white projections to estimate a gain and offset for each camera pixel. Warp the game frame with <var>H</var> and apply those values to predict the camera image inside the projection area.</p>
+        </li>
+        <li>
+          <h3>Recover the shadows</h3>
+          <p>In Shadow Harbor and Water Wakes, pixels sufficiently darker than predicted form a shadow mask. OpenCV extracts the contours and <var>H</var><sup>−1</sup> maps them back to the playfield as polygons.</p>
+        </li>
+      </ol>
+      <p class="source"><a href="https://github.com/fmessens/CAM_pygame/blob/main/modules/calibration.py">Calibration code</a> <a href="https://github.com/fmessens/CAM_pygame/blob/main/modules/camera_magic.py">Frame warping code</a></p>
+    </section>
+
+    <section id="solvers" class="section wrap" aria-labelledby="solvers-title">
+      <h2 id="solvers-title">Two ways to simulate water</h2>
+      <div class="solvers">
+        <article>
+          <p class="label">Wave dynamics · Level 1</p>
+          <h3>Shadow Harbor</h3>
+          <p>A 240 × 180 NumPy grid stores wave height. Each step uses the current and previous heights plus a five-point Laplacian, which compares a cell with its four neighbors.</p>
+          <p class="equation" aria-label="Next height equals two minus damping times current height, minus one minus damping times previous height, plus c squared times the discrete Laplacian.">u<sub>next</sub> = (2 − d)u − (1 − d)u<sub>prev</sub> + c²Δ<sub>5</sub>u</p>
+          <p>Shadows, the dock, and the grid edges pin the height to zero. Clicks and a driven source generate ripples. The game samples the surface slope to help steer the boat.</p>
+          <a href="https://github.com/fmessens/CAM_pygame/blob/main/level_1.py">Read the wave solver</a>
+        </article>
+        <article>
+          <p class="label">Fluid dynamics · Level 6 bis</p>
+          <h3>Water Wakes</h3>
+          <p>A 128 × 72 grid stores horizontal and vertical velocity. Semi-Lagrangian advection traces each cell backward through the flow and bilinearly samples the old velocity.</p>
+          <p class="equation" aria-label="Solve the pressure Poisson equation, then subtract the pressure gradient from velocity.">∇²p ≈ ∇·v &nbsp;·&nbsp; v ← v − ∇p</p>
+          <p>A 35-iteration Jacobi pressure solve reduces divergence, and solid shadow cells have zero velocity. A procedural wake adds slowing and sideways motion downstream. Bubbles trace the resulting flow.</p>
+          <a href="https://github.com/fmessens/CAM_pygame/blob/main/level_6_bis.py">Read the fluid solver</a>
+        </article>
+      </div>
+    </section>
+
+    <section id="setup" class="section setup wrap" aria-labelledby="setup-title">
+      <div>
+        <h2 id="setup-title">Set up the arcade</h2>
+        <p>Connect a projector as an extended display and point a USB camera at the projected playfield. The default projection target is display 2.</p>
+      </div>
+      <div>
+        <pre><code>python -m pip install -r requirements.txt
+python level_menu.py --camera-index 1</code></pre>
+        <p>Choose <strong>Shadow Calibration</strong> in the menu. Keep the red dot in view and press <strong>Space</strong> when the checkerboard is in focus. The levels share the saved calibration. Run it again if the camera or projector moves.</p>
+        <a href="https://github.com/fmessens/CAM_pygame#setup">See the full setup guide</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer wrap">
+    <span>Shadow Arcade</span>
+    <a href="https://github.com/fmessens/CAM_pygame">CAM_pygame on GitHub</a>
+  </footer>
+</body>
+</html>

@@ -57,12 +57,20 @@ window to end the running game. The menu can reopen that window during play.
 
 **Tech info** explains calibration, shadow detection, the Shadow Harbor wave
 solver, and the Water Wakes fluid solver. With three extended displays connected,
-use **Third screen** or **F11** to open a fullscreen copy of the menu on display 3.
+use **Third screen** or **Shift+F11** to open a fullscreen copy of the menu on display 3.
 It follows the launcher page, switches to the QR setup for multiplayer, and
 returns to the launcher page when the level stops.
+The launcher and controller QR windows can each be dragged by their title bar
+and resized. Press **F11** in either window to fill its current display, then
+press **F11** or **Esc** to return to windowed mode.
 
 **Vortex Bubbles** in Experimental levels uses the Water Wakes solver. Green
 bubbles mark detected vortices, and the number is the live count.
+
+**Windward** in Experimental levels is a multiplayer sailing game on the same
+water simulation. Steer with the phone joystick, sail downwind for speed, and
+use **Fire Left** and **Fire Right** to launch cannonballs from the bow.
+Ships, projectiles, and impacts wrap at all four edges.
 
 Phone-controlled levels use the PC’s Windows Mobile Hotspot. If it is off,
 click **Open Mobile Hotspot settings**, set **Share over** to **Wi-Fi**, and turn it on.
