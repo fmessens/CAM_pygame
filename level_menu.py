@@ -19,6 +19,7 @@ import pygame
 import qrcode
 from pygame._sdl2.video import Renderer, Texture, Window
 
+from modules.arcade_info import InfoDisplay, TECHNOLOGY
 from modules.windows_hotspot import Hotspot, HotspotAddressUnavailable, read_hotspot
 
 
@@ -37,6 +38,7 @@ GOLD = "#f5cb83"
 FONT = "Segoe UI"
 MENU_SIZE = (936, 590)
 PHONE_SIZE = (624, 496)
+EXPERIMENTS_PER_PAGE = 6
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,7 @@ EXPERIMENTAL = (
     Level("level_4_tris", "Glider Battle", "Aim and throw with joystick phone controls.", "#ffb38d", True),
     Level("level_6", "Pressure Stream", "Trace the current around shadows with bubbles.", "#72ded9"),
     Level("level_6_tris", "Wind Wakes", "Follow streaks through a turbulent wind field.", "#72ded9"),
+    Level("level_6_quater", "Vortex Bubbles", "Follow green bubbles and count the active vortices.", "#a4df9b"),
     Level("level_8", "Shadow Percussion", "Bounce balls off shadows to play instruments.", "#f5cb83"),
 )
 
@@ -453,6 +456,9 @@ class Menu:
         self.stop_requested = False
         self.phone_focused = False
         self.experimental = False
+        self.experimental_page = 0
+        self.show_technology = False
+        self.info_display: InfoDisplay | None = None
         self.calibration_prompt = False
         self.running = True
         self.status = cache_status(camera_index)[1]
@@ -553,6 +559,27 @@ class Menu:
 
     def toggle_section(self):
         self.experimental = not self.experimental
+        self.experimental_page = 0
+        self.show_technology = False
+
+    def toggle_technology(self):
+        self.show_technology = not self.show_technology
+
+    def change_experimental_page(self, delta):
+        self.experimental_page += delta
+
+    def toggle_info_display(self):
+        if self.info_display is not None:
+            self.info_display.close()
+            self.info_display = None
+            return
+        from level_1 import get_target_monitor
+
+        _, monitor, count = get_target_monitor(2)
+        if count < 3:
+            self.status = "Connect a third display to open the fullscreen info screen."
+            return
+        self.info_display = InfoDisplay(monitor)
 
     def open_calibration_prompt(self):
         self.calibration_prompt = True
@@ -560,6 +587,8 @@ class Menu:
     def quit(self):
         if self.child is None:
             self.close_phone()
+            if self.info_display is not None:
+                self.toggle_info_display()
             self.running = False
         else:
             self.status = "Close the active level or calibration first."
@@ -567,23 +596,25 @@ class Menu:
     def draw(self):
         view = self.view
         view.clear()
-        view.text("Experimental levels" if self.experimental else "Shadow Arcade",
-                  (29, 24), 44, bold=True)
+        title = ("How it works" if self.show_technology else
+                 "Experimental levels" if self.experimental else "Shadow Arcade")
+        view.text(title, (29, 24), 44, bold=True)
+        view.button((531, 31, 126, 43), "Back to levels" if self.show_technology else "Tech info",
+                    self.toggle_technology)
         view.button((675, 31, 231, 43),
                     "←  Main menu" if self.experimental else "Experimental levels  →",
                     self.toggle_section)
         pygame.draw.line(view.surface, HOVER, (29, 89), (906, 89))
-        levels = EXPERIMENTAL if self.experimental else LEVELS
-        for index, level in enumerate(levels):
-            self.draw_card(index, level.title, level.description, level.color,
-                           "Multiplayer · Phone setup  →" if level.phone else "Launch  →",
-                           lambda selected=level: self.select_level(selected))
-        if not self.experimental:
-            self.draw_card(len(levels), "Shadow Calibration",
-                           "Align the camera and projector for every level.", GOLD,
-                           "Calibrate  →", self.open_calibration_prompt)
+        if self.show_technology:
+            self.draw_technology()
+        else:
+            self.draw_levels()
         pygame.draw.line(view.surface, HOVER, (29, 526), (906, 526))
+        view.surface.set_clip((29, 535, 442, 42))
         view.text(self.status, (29, 546), 17, MUTED)
+        view.surface.set_clip(None)
+        view.button((475, 539, 126, 36), "Close screen" if self.info_display else "Third screen",
+                    self.toggle_info_display)
         if self.phone is not None:
             label = "QR codes" if self.phone.codes else "Phone setup"
             view.button((612, 539, 128, 36), label, self.show_phone)
@@ -593,22 +624,50 @@ class Menu:
             self.draw_calibration_prompt()
         pygame.display.flip()
 
+    def draw_levels(self):
+        if self.experimental:
+            first = self.experimental_page * EXPERIMENTS_PER_PAGE
+            levels = EXPERIMENTAL[first:first + EXPERIMENTS_PER_PAGE]
+            self.view.button((440, 31, 36, 43), "‹",
+                             (lambda: self.change_experimental_page(-1)) if first else None)
+            next_page = first + EXPERIMENTS_PER_PAGE < len(EXPERIMENTAL)
+            self.view.button((481, 31, 36, 43), "›",
+                             (lambda: self.change_experimental_page(1)) if next_page else None)
+        else:
+            levels = LEVELS
+        for index, level in enumerate(levels):
+            self.draw_card(index, level.title, level.description, level.color,
+                           "Multiplayer · Phone setup  →" if level.phone else "Launch  →",
+                           lambda selected=level: self.select_level(selected))
+        if not self.experimental:
+            self.draw_card(len(levels), "Shadow Calibration",
+                           "Align the camera and projector for every level.", GOLD,
+                           "Calibrate  →", self.open_calibration_prompt)
+
+    def draw_technology(self):
+        view = self.view
+        for index, (title, color, lines) in enumerate(TECHNOLOGY):
+            col, row = index % 2, index // 2
+            x, y = 29 + col * 449, 105 + row * 137
+            pygame.draw.rect(view.surface, PANEL, (x, y, 429, 126), border_radius=11)
+            view.text(title, (x + 15, y + 8), 20, color, bold=True)
+            for line, text in enumerate(lines):
+                view.text(text, (x + 15, y + 37 + 16 * line), 14, MUTED)
+
     def draw_card(self, index, title, description, color, action_label, action):
         column, row = index % 3, index // 3
-        card_count = len(EXPERIMENTAL) if self.experimental else len(LEVELS) + 1
-        compact = card_count > 6
-        height, spacing = (124, 137) if compact else (181, 195)
+        height, spacing = 181, 195
         x, y = 29 + column * 296, 105 + row * spacing
         rect = pygame.Rect(x, y, 285, height)
         view = self.view
         enabled = self.child is None
         fill = HOVER if enabled and rect.collidepoint(view.mouse) else PANEL
         pygame.draw.rect(view.surface, fill, rect, border_radius=11)
-        title_y = y + (10 if compact else 19)
+        title_y = y + 19
         pygame.draw.rect(view.surface, color, (x + 14, title_y + 3, 4, 25), border_radius=2)
         view.text(title, (x + 27, title_y), 23, INK, bold=True)
         words = description.split()
-        description_y = title_y + (35 if compact else 45)
+        description_y = title_y + 45
         for line, split in enumerate((words[:5], words[5:])):
             view.text(" ".join(split), (x + 18, description_y + line * 19), 16, MUTED)
         view.text(action_label, (x + 18, rect.bottom - 29), 16, color if enabled else MUTED, bold=True)
@@ -645,12 +704,29 @@ class Menu:
                 self.phone.draw()
             if self.level_controls is not None:
                 self.level_controls.draw(self.stop_requested)
+            if self.info_display is not None:
+                self.info_display.draw(self.phone.view if self.phone is not None else self.view)
             for event in pygame.event.get():
                 event_window = getattr(event, "window", None)
                 window_id = event_window.id if event_window is not None else None
                 targets_menu = window_id == self.window.id
                 phone = self.phone
                 targets_phone = phone is not None and window_id == phone.window.id
+                info = self.info_display
+                targets_info = info is not None and window_id == info.window.id
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
+                    self.toggle_info_display()
+                    continue
+                if targets_info:
+                    if event.type == pygame.WINDOWCLOSE:
+                        self.toggle_info_display()
+                    elif event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN):
+                        info.handle_pointer(event)
+                    elif event.type == pygame.DROPFILE and phone is not None:
+                        phone.import_wifi_qr(event.file)
+                    elif event.type == pygame.WINDOWFOCUSGAINED:
+                        self.phone_focused = False
+                    continue
                 controls = self.level_controls
                 if controls is not None and window_id == controls.window.id:
                     if event.type == pygame.WINDOWFOCUSGAINED:
@@ -685,6 +761,8 @@ class Menu:
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE and (targets_menu or window_id is None):
                     if self.calibration_prompt:
                         self.close_calibration_prompt()
+                    elif self.show_technology:
+                        self.toggle_technology()
                     elif self.experimental:
                         self.toggle_section()
             clock.tick(30)

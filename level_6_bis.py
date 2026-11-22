@@ -12,6 +12,7 @@ import pygame
 import level_1 as base
 from modules.calibration import calibrate_system
 from modules.camera_magic import gain_offset_calibration, screen_to_camera_space
+from modules.physics.vortices import detect_vortices
 from modules.videostream import VideoStream, get_camera_capture
 
 
@@ -230,12 +231,23 @@ class FlowBubbles:
         )
         self.respawn(dead)
 
-    def draw(self, screen):
+    def draw(self, screen, vortices=None):
         points = self.position.astype(np.int32)
+        inside = None
+        if vortices is not None:
+            rows, cols = vortices.shape
+            gx = np.clip((self.position[:, 0] * cols / self.width).astype(np.intp), 0, cols - 1)
+            gy = np.clip((self.position[:, 1] * rows / self.height).astype(np.intp), 0, rows - 1)
+            inside = vortices[gy, gx]
         for radius in (1, 2, 3):
             color = (172, 220, 238) if radius == 1 else (210, 239, 247)
-            for x, y in points[self.radius == radius]:
+            of_radius = self.radius == radius
+            ordinary = of_radius if inside is None else of_radius & ~inside
+            for x, y in points[ordinary]:
                 pygame.draw.circle(screen, color, (int(x), int(y)), radius)
+            if inside is not None:
+                for x, y in points[of_radius & inside]:
+                    pygame.draw.circle(screen, (181, 237, 200), (int(x), int(y)), radius)
 
 
 def render_flow(flow, img, shadow_mask):
@@ -265,15 +277,16 @@ def draw_vectors(screen, flow, solid, cell_w, cell_h):
             pygame.draw.line(screen, (48, 103, 140), end, end - direction * head - side * head * 0.5, 1)
 
 
-def main(cached_calibration=False, camera_index=1):
+def main(cached_calibration=False, camera_index=1, *, show_vortices=False):
     pygame.init()
     screen, width, height, display_index, monitor, monitor_count = (
         base.create_fullscreen_display(TARGET_DISPLAY_INDEX)
     )
     base.WIDTH, base.HEIGHT = width, height
-    pygame.display.set_caption("Level 6 bis - Shadow Wake Stream")
+    pygame.display.set_caption("Vortex Bubbles" if show_vortices else "Level 6 bis - Shadow Wake Stream")
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("Arial", 20)
+    score_font = pygame.font.SysFont("Arial", 44, bold=True) if show_vortices else None
 
     print(
         "Display:",
@@ -307,15 +320,31 @@ def main(cached_calibration=False, camera_index=1):
     bubbles = FlowBubbles(BUBBLE_COUNT, width, height)
     image = np.zeros((GRID_H, GRID_W, 3), dtype=np.uint8)
     grid_surface = pygame.Surface((GRID_W, GRID_H))
+    fixed_expected = None
+    if show_vortices:
+        # Bright moving bubbles and score digits must not generate shadows
+        # when the camera frame lags behind the projection.
+        render_flow(flow, image, None)
+        screen.fill(tuple(image[0, 0]))
+        pygame.display.flip()
+        camera_h, camera_w = camera_mask.shape
+        projected_gray = screen_to_camera_space(
+            screen, homography, camera_mask, camera_h, camera_w
+        )
+        fixed_expected = gain_offset_calibration(projected_gray, a_map, b_map)
 
     running = True
     paused = False
     drive_on = True
     show_vectors = True
+    vortex_mask = None
+    vortex_count = 0
+    score = None
     frame_count = 0
     report_time = time.perf_counter()
 
-    print("Controls: C=reset, M=toggle current, P=pause, V=vectors, ESC=quit")
+    print("Controls: C=reset, M=toggle current, P=pause, ESC=quit"
+          if show_vortices else "Controls: C=reset, M=toggle current, P=pause, V=vectors, ESC=quit")
 
     while running:
         dt = min(clock.tick(FPS) / 1000.0, 1.0 / 30.0)
@@ -328,12 +357,15 @@ def main(cached_calibration=False, camera_index=1):
                 elif event.key == pygame.K_c:
                     flow.reset()
                     bubbles.reset()
+                    vortex_mask, vortex_count = None, 0
                 elif event.key == pygame.K_m:
                     drive_on = not drive_on
                 elif event.key == pygame.K_p:
                     paused = not paused
-                elif event.key == pygame.K_v:
+                elif event.key == pygame.K_v and not show_vortices:
                     show_vectors = not show_vectors
+        if not running:
+            break
 
         ret, camera_frame = cap_stream.read()
         if not ret:
@@ -343,11 +375,13 @@ def main(cached_calibration=False, camera_index=1):
         camera_gray_masked = cv2.bitwise_and(
             camera_gray, camera_gray, mask=camera_mask
         )
-        camera_h, camera_w = camera_gray.shape[:2]
-        projected_gray = screen_to_camera_space(
-            screen, homography, camera_mask, camera_h, camera_w
-        )
-        expected = gain_offset_calibration(projected_gray, a_map, b_map)
+        expected = fixed_expected
+        if expected is None:
+            camera_h, camera_w = camera_gray.shape[:2]
+            projected_gray = screen_to_camera_space(
+                screen, homography, camera_mask, camera_h, camera_w
+            )
+            expected = gain_offset_calibration(projected_gray, a_map, b_map)
         mask_diff = np.zeros_like(camera_gray_masked, dtype=bool)
         objects, contours_vis = base.shadow_object_detection_calibrated(
             camera_gray_masked,
@@ -364,21 +398,27 @@ def main(cached_calibration=False, camera_index=1):
         if not paused:
             flow.step(dt, shadow_mask, drive_on)
             bubbles.step(flow, shadow_mask, dt, cell_w, cell_h)
+            if show_vortices:
+                vortex_mask, vortex_count = detect_vortices(flow.velocity, shadow_mask)
 
         render_flow(flow, image, shadow_mask)
         pygame.surfarray.blit_array(grid_surface, image.swapaxes(0, 1))
         pygame.transform.smoothscale(grid_surface, screen.get_size(), screen)
-        bubbles.draw(screen)
-        if show_vectors:
-            draw_vectors(screen, flow, shadow_mask, cell_w, cell_h)
-
-        status = (
-            f"{clock.get_fps():4.0f} FPS  |  "
-            f"{PRESSURE_ITERATIONS} pressure iterations + wake turbulence  |  "
-            f"{'paused' if paused else 'flowing'}"
-        )
-        label = font.render(status, True, (235, 242, 245))
-        screen.blit(label, (14, 12))
+        bubbles.draw(screen, vortex_mask)
+        if show_vortices:
+            if score is None or score[0] != vortex_count:
+                score = vortex_count, score_font.render(str(vortex_count), True, (235, 250, 241))
+            screen.blit(score[1], score[1].get_rect(topright=(width - 24, 18)))
+        else:
+            if show_vectors:
+                draw_vectors(screen, flow, shadow_mask, cell_w, cell_h)
+            status = (
+                f"{clock.get_fps():4.0f} FPS  |  "
+                f"{PRESSURE_ITERATIONS} pressure iterations + wake turbulence  |  "
+                f"{'paused' if paused else 'flowing'}"
+            )
+            label = font.render(status, True, (235, 242, 245))
+            screen.blit(label, (14, 12))
         pygame.display.flip()
 
         frame_count += 1
@@ -387,10 +427,11 @@ def main(cached_calibration=False, camera_index=1):
             print(f"FPS: {clock.get_fps():.1f} | Shadow objects: {len(objects)}")
             report_time = now
 
-        cv2.imshow("Camera View", camera_frame)
-        cv2.imshow("Expected Camera Image", expected)
-        cv2.imshow("Contours", contours_vis)
-        cv2.waitKey(1)
+        if not show_vortices:
+            cv2.imshow("Camera View", camera_frame)
+            cv2.imshow("Expected Camera Image", expected)
+            cv2.imshow("Contours", contours_vis)
+            cv2.waitKey(1)
 
     cap_stream.release()
     pygame.quit()

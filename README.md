@@ -55,6 +55,15 @@ Recalibrate if the camera or projection geometry changes. The other levels are u
 **Experimental levels**. Use **Stop Level** in the separate **Level Controls**
 window to end the running game. The menu can reopen that window during play.
 
+**Tech info** explains calibration, shadow detection, the Shadow Harbor wave
+solver, and the Water Wakes fluid solver. With three extended displays connected,
+use **Third screen** or **F11** to open a fullscreen copy of the menu on display 3.
+It follows the launcher page, switches to the QR setup for multiplayer, and
+returns to the launcher page when the level stops.
+
+**Vortex Bubbles** in Experimental levels uses the Water Wakes solver. Green
+bubbles mark detected vortices, and the number is the live count.
+
 Phone-controlled levels use the PC’s Windows Mobile Hotspot. If it is off,
 click **Open Mobile Hotspot settings**, set **Share over** to **Wi-Fi**, and turn it on.
 The level starts as soon as the launcher detects the hotspot and shows two QR
