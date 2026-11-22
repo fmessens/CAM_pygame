@@ -29,6 +29,7 @@ class ServerConfig:
     ws_port: int
     app_title: str = "Mobile WebPad Demo"
     helper_note_html: str = "A / UP JUMP<br>B DASH"
+    controller_path: str = "/controller"
 
     @property
     def setup_url(self) -> str:
@@ -36,7 +37,7 @@ class ServerConfig:
 
     @property
     def controller_url(self) -> str:
-        return f"http://{self.public_host}:{self.http_port}/controller"
+        return f"http://{self.public_host}:{self.http_port}{self.controller_path}"
 
 
 class ControllerHttpServer(ThreadingHTTPServer):

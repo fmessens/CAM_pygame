@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import socket
 import sys
@@ -547,10 +548,14 @@ def parse_args():
         default=8765,
         help="WebSocket port for mobile input.",
     )
+    parser.add_argument("--camera-index", type=int, help="OpenCV camera index.")
     return parser.parse_args()
 
 
-def main(cached_calibration=False, bind_host="0.0.0.0", public_host=None, http_port=8000, ws_port=8765):
+def main(cached_calibration=False, bind_host="0.0.0.0", public_host=None, http_port=8000, ws_port=8765, camera_index=None):
+    if camera_index is None:
+        camera_index = int(os.environ.get("CAMERA_INDEX", "0"))
+
     cap_stream = None
     http_server = None
     http_thread = None
@@ -589,7 +594,7 @@ def main(cached_calibration=False, bind_host="0.0.0.0", public_host=None, http_p
             H, mask, a_map, b_map = calibration
             H_inv = np.linalg.inv(H)
         else:
-            cap = get_camera_capture()
+            cap = get_camera_capture(camera_index)
             H, mask, _, a_map, b_map = calibrate_system(
                 cap=cap, screen=screen, WIDTH=width, HEIGHT=height
             )
@@ -597,7 +602,7 @@ def main(cached_calibration=False, bind_host="0.0.0.0", public_host=None, http_p
             save_calibration(CALIBRATION_CACHE, H, mask, a_map, b_map)
             cap.release()
 
-        cap_stream = VideoStream(0)
+        cap_stream = VideoStream(camera_index)
 
         public_host = public_host or detect_public_host()
         controller_state = ControllerState()
@@ -829,4 +834,5 @@ if __name__ == "__main__":
         public_host=args.public_host,
         http_port=args.http_port,
         ws_port=args.ws_port,
+        camera_index=args.camera_index,
     )

@@ -27,11 +27,45 @@ Root scripts:
 - `level_3.py` - Single-player heat glider with keyboard controls.
 - `level_4.py` - Multiplayer heat gliders with QR phone controllers.
 - `level_4_bis.py` - Multiplayer wraparound heat gliders with floor gaps and throwable stones.
+- `level_5.py` - Multiplayer always-open parachutes with stones, non-sticky shadow collision, and no platforms.
+  Stone, sword, and bow pickups periodically descend on full heat-reactive parachutes;
+  defeated players fall away while their held weapon continues descending as a pickup.
+- `level_7.py` - Multiplayer platformer with one-way shadow platforms, jumping, and Level 5 combat.
+- `level_8.py` - Shadow Percussion. Press Space to launch a ball through the Big Beat
+  in the middle. Balls wrap at all four edges. Bounce them off shadows to play the
+  kick, snare, cymbal, or guitar in the corners. Press Backspace to clear the balls.
 - `main_levels.py` - Runs Level 1, then Level 2 after success.
 
 Experimental scripts live in `experiments/`.
 
 ## Run
+
+### Shadow Arcade menu
+
+```powershell
+python .\level_menu.py --camera-index 1
+```
+
+Choose **Shadow Calibration** to align the camera and projector. Keep the red dot
+in the checkerboard’s top-left square visible to the camera. Focus the projected
+checkerboard and press **Space**, then advance through the OpenCV previews with a key.
+The preview highlights the detected top edge in yellow.
+The menu writes the shared `calibration_cache.npz` and launches every level using it.
+Recalibrate if the camera or projection geometry changes. The other levels are under
+**Experimental levels**. Use **Stop Level** in the separate **Level Controls**
+window to end the running game. The menu can reopen that window during play.
+
+Phone-controlled levels use the PC’s Windows Mobile Hotspot. If it is off,
+click **Open Mobile Hotspot settings**, set **Share over** to **Wi-Fi**, and turn it on.
+The level starts as soon as the launcher detects the hotspot and shows two QR
+codes. Scan **1** to join Wi-Fi, then **2** to open the controller once it is ready.
+If the PC is connected to a phone’s hotspot, select **Use current Wi-Fi** instead
+and scan the controller QR. To share the phone hotspot with other players, drop
+a screenshot of the phone’s Wi-Fi QR into the controller QR window. Players can
+then scan the phone hotspot QR first and the controller QR second.
+The controllers communicate locally over TCP ports `8000` and `8765`.
+
+### Standalone levels
 
 Level 1:
 
@@ -48,7 +82,7 @@ Level 2:
 Level 3:
 
 ```powershell
-.\.w_venv\Scripts\python.exe .\level_3.py
+.\.w_venv\Scripts\python.exe .\level_3.py --camera-index 1
 ```
 
 Level 4:
@@ -62,6 +96,34 @@ Level 4 Bis:
 ```powershell
 .\.w_venv\Scripts\python.exe .\level_4_bis.py --camera-index 1
 ```
+
+Level 5:
+
+```powershell
+.\.w_venv\Scripts\python.exe .\level_5.py --camera-index 1
+```
+
+Level 7:
+
+```powershell
+python .\level_7.py --camera-index 1
+```
+
+Scan the QR code on the printed setup page to join from a phone. The joystick moves and aims.
+Use **Jump** to reach shadow platforms and **Attack / Throw** to use your weapon.
+Stone, sword, and bow pickups disappear half a second after landing on the floor or a shadow.
+Press **Jump** to rejoin after falling when defeated.
+
+Standalone extended calibration experiment:
+
+```powershell
+.\.w_venv\Scripts\python.exe .\calibration_experiment.py --camera-index 1
+.\.w_venv\Scripts\python.exe .\level_5.py --camera-index 1 --cached-calibration
+```
+
+The experiment holds black, Level 5 gray, and white for several seconds and combines
+multiple camera frames. Adjust it with `--settle-seconds`, `--sample-seconds`,
+`--statistic mean`, or a camera-supported `--camera-exposure` value.
 
 Combined Level 1 -> Level 2 flow:
 
@@ -99,4 +161,3 @@ Level scripts support `--cached-calibration`.
 
 - Without it, the script runs camera/projector calibration and writes `calibration_cache.npz`.
 - With it, the script loads `calibration_cache.npz` and skips calibration.
-

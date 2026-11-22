@@ -14,9 +14,12 @@ def make_checkerboard_fullscreen(cols=8, rows=6, width=800, height=600):
     for y in range(rows):
         for x in range(cols):
             if (x + y) % 2 == 0:
-                x0, y0 = x * square_w, y * square_h
-                x1, y1 = (x + 1) * square_w, (y + 1) * square_h
+                x0, y0 = x * width // cols, y * height // rows
+                x1, y1 = (x + 1) * width // cols, (y + 1) * height // rows
                 board[y0:y1, x0:x1] = 255
+    # This array goes directly to Pygame, so the marker color is RGB.
+    cv2.circle(board, (square_w // 2, square_h // 2),
+               max(1, min(square_w, square_h) // 5), (255, 36, 36), -1, cv2.LINE_AA)
     return board
 
 
@@ -26,7 +29,7 @@ def make_checkerboard_fullscreen(cols=8, rows=6, width=800, height=600):
 def calibrate_system(cap, screen, cols=8, rows=6, WIDTH=800, HEIGHT=600):
     project_checkerboard(cols, rows, screen)
 
-    print("Calibration: Position checkerboard so the camera sees it. Press SPACE.")
+    print("Calibration: Keep the whole checkerboard and its red top-left dot visible. Press SPACE.")
 
     H, mask, cam_corners = wait_for_checkerboard_capture(
         cols, rows, WIDTH, HEIGHT, cap
@@ -78,16 +81,18 @@ def wait_for_checkerboard_capture(cols, rows, WIDTH, HEIGHT, cap):
                     continue
 
                 objp = compute_screen_object_points(cols, rows, WIDTH, HEIGHT)
-                imgp = corners.reshape(-1, 2).astype(np.float32)
-
-                H = compute_homography(objp, imgp)
+                oriented = orient_checkerboard(frame, corners, pattern_inner, objp, WIDTH, HEIGHT)
+                if oriented is None:
+                    print("Red orientation dot not detected. Make it visible and press SPACE again.")
+                    continue
+                H, corners = oriented
                 cam_corners = compute_projection_polygon(H, WIDTH, HEIGHT)
 
                 preview_homography(frame, pattern_inner, corners, cam_corners)
 
                 mask = build_projection_mask(frame, cam_corners)
                 return H, mask, cam_corners
-            
+
 
 def detect_checkerboard(frame, pattern_inner):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -117,6 +122,40 @@ def compute_homography(objp, imgp):
     return H
 
 
+def orient_checkerboard(frame, corners, pattern_inner, screen_points, width, height):
+    """Choose the corner order whose projected top-left square contains the red dot."""
+    inner_cols, inner_rows = pattern_inner
+    grid = corners.reshape(inner_rows, inner_cols, 2)
+    cell_w, cell_h = width / (inner_cols + 1), height / (inner_rows + 1)
+    marker_samples = np.float32([
+        (cell_w * x, cell_h * y)
+        for y in (0.45, 0.5, 0.55)
+        for x in (0.45, 0.5, 0.55)
+    ]).reshape(-1, 1, 2)
+    candidates = []
+    for ordered in (grid, grid[::-1], grid[:, ::-1], grid[::-1, ::-1]):
+        ordered = np.ascontiguousarray(ordered.reshape(-1, 1, 2))
+        H = compute_homography(screen_points, ordered.reshape(-1, 2))
+        if H is None:
+            continue
+        samples = cv2.perspectiveTransform(marker_samples, H).reshape(-1, 2)
+        if not np.isfinite(samples).all():
+            continue
+        x, y = np.rint(samples).astype(int).T
+        if not ((0 <= x) & (x < frame.shape[1]) & (0 <= y) & (y < frame.shape[0])).all():
+            continue
+        blue, green, red = frame[y, x].astype(np.int16).T
+        score = float(np.median(red - np.maximum(blue, green)))
+        candidates.append((score, H, ordered))
+
+    candidates.sort(key=lambda candidate: candidate[0], reverse=True)
+    if not candidates or candidates[0][0] < 20:
+        return None
+    if len(candidates) > 1 and candidates[0][0] - candidates[1][0] < 15:
+        return None
+    return candidates[0][1], candidates[0][2]
+
+
 def compute_projection_polygon(H, WIDTH, HEIGHT):
     screen_corners = np.float32([
         [0, 0],
@@ -131,11 +170,12 @@ def compute_projection_polygon(H, WIDTH, HEIGHT):
 def preview_homography(frame, pattern_inner, corners, cam_corners):
     preview = frame.copy()
     cv2.polylines(preview, [cam_corners], True, (0, 0, 255), 2)
+    cv2.line(preview, tuple(cam_corners[0]), tuple(cam_corners[1]), (40, 245, 255), 4)
     cv2.drawChessboardCorners(preview, pattern_inner, corners, True)
 
-    cv2.imshow("Calibration preview (red = full screen)", preview)
+    cv2.imshow("Calibration preview (yellow = top edge)", preview)
     cv2.waitKey(0)
-    cv2.destroyWindow("Calibration preview (red = full screen)")
+    cv2.destroyWindow("Calibration preview (yellow = top edge)")
 
 
 def build_projection_mask(frame, cam_corners):
