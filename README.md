@@ -2,6 +2,8 @@
 
 Interactivity with games through a camera + projector setup.
 
+[Shadow Arcade project website](https://fmessens.github.io/CAM_pygame/) · Demo video, projector calibration, and wave and fluid solvers.
+
 ![ball game](images/visual.jpg)
 
 ## Setup
